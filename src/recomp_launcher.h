@@ -801,6 +801,9 @@ typedef enum RecompLauncherCModOptionType {
      * host should surface why via last_error). Appended additively; only
      * games whose providers supply a TEXT option ever render one. */
     RECOMP_MOD_OPTION_TEXT = 3,
+    /* Press a raw SDL joystick button; value is its zero-based index or -1.
+     * device_guid restricts capture to one selected joystick. */
+    RECOMP_MOD_OPTION_RAW_BUTTON = 4,
 } RecompLauncherCModOptionType;
 
 typedef struct RecompLauncherCModPackage {
@@ -881,6 +884,7 @@ typedef struct RecompLauncherCModOption {
      * UI only has to grey the control out -- it never cross-references
      * options itself. Example: ticking "Instant" makes the speed box inert. */
     int  disabled;
+    char device_guid[40]; /* RAW_BUTTON only; empty accepts any joystick. */
 } RecompLauncherCModOption;
 
 typedef struct RecompLauncherCModChoice {

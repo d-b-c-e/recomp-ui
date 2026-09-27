@@ -10439,6 +10439,15 @@ static bool mod_feature_less(const ModFeatureListItem& lhs,
     return std::strcmp(lhs.feature.id, rhs.feature.id) < 0;
 }
 
+struct RawModCapture {
+    bool active = false;
+    char package[RECOMP_LAUNCHER_MOD_ID_MAX]{};
+    char feature[RECOMP_LAUNCHER_MOD_ID_MAX]{};
+    char option[RECOMP_LAUNCHER_MOD_ID_MAX]{};
+    char guid[40]{};
+};
+static RawModCapture s_raw_mod_capture;
+
 static void draw_mod_feature_option(LauncherModel* m,
                                     const RecompLauncherCModFeature& feature,
                                     const RecompLauncherCModOption& option) {
@@ -10500,6 +10509,26 @@ static void draw_mod_feature_option(LauncherModel* m,
             }
             ImGui::EndCombo();
         }
+    } else if (option.type == RECOMP_MOD_OPTION_RAW_BUTTON) {
+        const bool capturing = s_raw_mod_capture.active &&
+            std::strcmp(s_raw_mod_capture.package, feature.package_id) == 0 &&
+            std::strcmp(s_raw_mod_capture.feature, feature.id) == 0 &&
+            std::strcmp(s_raw_mod_capture.option, option.id) == 0;
+        ImGui::TextUnformatted(option.label);
+        ImGui::SameLine(px(260));
+        char caption[64];
+        if (capturing) std::snprintf(caption, sizeof(caption), "Press a button…");
+        else if (std::atoi(option.value) < 0) std::snprintf(caption, sizeof(caption), "Unbound");
+        else std::snprintf(caption, sizeof(caption), "Button %s", option.value);
+        if (ImGui::Button(caption, ImVec2(px(230), 0))) {
+            s_raw_mod_capture.active = true;
+            std::snprintf(s_raw_mod_capture.package, sizeof(s_raw_mod_capture.package), "%s", feature.package_id);
+            std::snprintf(s_raw_mod_capture.feature, sizeof(s_raw_mod_capture.feature), "%s", feature.id);
+            std::snprintf(s_raw_mod_capture.option, sizeof(s_raw_mod_capture.option), "%s", option.id);
+            std::snprintf(s_raw_mod_capture.guid, sizeof(s_raw_mod_capture.guid), "%s", option.device_guid);
+        }
+        if (capturing && ImGui::IsItemHovered())
+            ImGui::SetTooltip("Press a button on the selected wheel. Escape cancels; Backspace unbinds.");
     } else if (option.type == RECOMP_MOD_OPTION_TEXT) {
         changed = draw_mod_text_option(option, next, sizeof(next));
     } else {
@@ -12848,6 +12877,39 @@ bool is_modifier_scancode(SDL_Scancode sc) {
  * any more" deserves an answer at the place the answer used to live. */
 
 bool try_capture(LauncherModel* m, const SDL_Event& ev) {
+    if (s_raw_mod_capture.active) {
+        if (ev.type == SDL_EVENT_KEY_DOWN && LNG_EVKEY(ev) == SDLK_ESCAPE) {
+            s_raw_mod_capture.active = false;
+            return true;
+        }
+        int button = -2;
+        if (ev.type == SDL_EVENT_KEY_DOWN && LNG_EVKEY(ev) == SDLK_BACKSPACE)
+            button = -1;
+        if (ev.type == SDL_EVENT_JOYSTICK_BUTTON_DOWN) {
+            char guid[40]{};
+#if defined(LNG_SDL3)
+            SDL_GUIDToString(SDL_GetJoystickGUIDForID((SDL_JoystickID)LNG_EVJBTNWHICH(ev)), guid, sizeof(guid));
+#else
+            SDL_Joystick* stick = SDL_JoystickFromInstanceID((SDL_JoystickID)LNG_EVJBTNWHICH(ev));
+            if (stick) SDL_JoystickGetGUIDString(SDL_JoystickGetGUID(stick), guid, sizeof(guid));
+#endif
+            if (!s_raw_mod_capture.guid[0] ||
+                std::strcmp(guid, s_raw_mod_capture.guid) == 0)
+                button = (int)LNG_EVJBTN(ev);
+        }
+        if (button != -2) {
+            char value[16];
+            std::snprintf(value, sizeof(value), "%d", button);
+            const auto* mods = m->mods;
+            if (mods && mods->feature_set_option &&
+                !mods->feature_set_option(mods->ctx, s_raw_mod_capture.package,
+                                          s_raw_mod_capture.feature,
+                                          s_raw_mod_capture.option, value))
+                mod_note_error(m);
+            s_raw_mod_capture.active = false;
+        }
+        return true;
+    }
     if (!m->capturing && !m->hk_capturing &&
         !m->camera_capturing)
         return false;
