@@ -804,6 +804,9 @@ typedef enum RecompLauncherCModOptionType {
     /* Press a raw SDL joystick button; value is its zero-based index or -1.
      * device_guid restricts capture to one selected joystick. */
     RECOMP_MOD_OPTION_RAW_BUTTON = 4,
+    /* Press/move a raw SDL joystick axis; value is its zero-based index or
+     * -1. Capture compares against the selected device's resting baseline. */
+    RECOMP_MOD_OPTION_RAW_AXIS = 5,
 } RecompLauncherCModOptionType;
 
 typedef struct RecompLauncherCModPackage {

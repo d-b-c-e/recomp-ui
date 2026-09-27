@@ -10441,12 +10441,79 @@ static bool mod_feature_less(const ModFeatureListItem& lhs,
 
 struct RawModCapture {
     bool active = false;
+    bool missing = false;
+    int type = RECOMP_MOD_OPTION_RAW_BUTTON;
     char package[RECOMP_LAUNCHER_MOD_ID_MAX]{};
     char feature[RECOMP_LAUNCHER_MOD_ID_MAX]{};
     char option[RECOMP_LAUNCHER_MOD_ID_MAX]{};
     char guid[40]{};
 };
 static RawModCapture s_raw_mod_capture;
+static SDL_Joystick* s_raw_mod_joystick = nullptr;
+static SDL_JoystickID s_raw_mod_joystick_id = 0;
+static int s_raw_mod_axis_count = 0;
+static int s_raw_mod_axis_baseline[32]{};
+
+static void raw_mod_close_capture() {
+    s_raw_mod_capture.active = false;
+    if (s_raw_mod_joystick) {
+#if defined(LNG_SDL3)
+        SDL_CloseJoystick(s_raw_mod_joystick);
+#else
+        SDL_JoystickClose(s_raw_mod_joystick);
+#endif
+    }
+    s_raw_mod_joystick = nullptr;
+    s_raw_mod_joystick_id = 0;
+    s_raw_mod_axis_count = 0;
+}
+
+static bool raw_mod_open_selected(const char* guid) {
+    raw_mod_close_capture();
+#if defined(LNG_SDL3)
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetJoysticks(&count);
+    if (ids) {
+        for (int i = 0; i < count; ++i) {
+            char found[40]{};
+            SDL_GUIDToString(SDL_GetJoystickGUIDForID(ids[i]), found, sizeof(found));
+            if (guid[0] && std::strcmp(found, guid) != 0) continue;
+            s_raw_mod_joystick = SDL_OpenJoystick(ids[i]);
+            if (s_raw_mod_joystick) s_raw_mod_joystick_id = ids[i];
+            break;
+        }
+        SDL_free(ids);
+    }
+#else
+    const int count = SDL_NumJoysticks();
+    for (int i = 0; i < count; ++i) {
+        char found[40]{};
+        SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(i), found, sizeof(found));
+        if (guid[0] && std::strcmp(found, guid) != 0) continue;
+        s_raw_mod_joystick = SDL_JoystickOpen(i);
+        if (s_raw_mod_joystick)
+            s_raw_mod_joystick_id = SDL_JoystickInstanceID(s_raw_mod_joystick);
+        break;
+    }
+#endif
+    if (!s_raw_mod_joystick) return false;
+#if defined(LNG_SDL3)
+    SDL_UpdateJoysticks();
+    s_raw_mod_axis_count = SDL_GetNumJoystickAxes(s_raw_mod_joystick);
+#else
+    SDL_JoystickUpdate();
+    s_raw_mod_axis_count = SDL_JoystickNumAxes(s_raw_mod_joystick);
+#endif
+    if (s_raw_mod_axis_count > 32) s_raw_mod_axis_count = 32;
+    for (int axis = 0; axis < s_raw_mod_axis_count; ++axis) {
+#if defined(LNG_SDL3)
+        s_raw_mod_axis_baseline[axis] = SDL_GetJoystickAxis(s_raw_mod_joystick, axis);
+#else
+        s_raw_mod_axis_baseline[axis] = SDL_JoystickGetAxis(s_raw_mod_joystick, axis);
+#endif
+    }
+    return true;
+}
 
 static void draw_mod_feature_option(LauncherModel* m,
                                     const RecompLauncherCModFeature& feature,
@@ -10509,26 +10576,38 @@ static void draw_mod_feature_option(LauncherModel* m,
             }
             ImGui::EndCombo();
         }
-    } else if (option.type == RECOMP_MOD_OPTION_RAW_BUTTON) {
+    } else if (option.type == RECOMP_MOD_OPTION_RAW_BUTTON ||
+               option.type == RECOMP_MOD_OPTION_RAW_AXIS) {
         const bool capturing = s_raw_mod_capture.active &&
+            std::strcmp(s_raw_mod_capture.package, feature.package_id) == 0 &&
+            std::strcmp(s_raw_mod_capture.feature, feature.id) == 0 &&
+            std::strcmp(s_raw_mod_capture.option, option.id) == 0;
+        const bool missing = s_raw_mod_capture.missing &&
             std::strcmp(s_raw_mod_capture.package, feature.package_id) == 0 &&
             std::strcmp(s_raw_mod_capture.feature, feature.id) == 0 &&
             std::strcmp(s_raw_mod_capture.option, option.id) == 0;
         ImGui::TextUnformatted(option.label);
         ImGui::SameLine(px(260));
         char caption[64];
-        if (capturing) std::snprintf(caption, sizeof(caption), "Press a button…");
+        if (capturing) std::snprintf(caption, sizeof(caption), "%s",
+            option.type == RECOMP_MOD_OPTION_RAW_AXIS ? "Move an axis…" : "Press a button…");
+        else if (missing) std::snprintf(caption, sizeof(caption), "Wheel not found");
         else if (std::atoi(option.value) < 0) std::snprintf(caption, sizeof(caption), "Unbound");
-        else std::snprintf(caption, sizeof(caption), "Button %s", option.value);
+        else std::snprintf(caption, sizeof(caption), "%s %s",
+            option.type == RECOMP_MOD_OPTION_RAW_AXIS ? "Axis" : "Button", option.value);
         if (ImGui::Button(caption, ImVec2(px(230), 0))) {
-            s_raw_mod_capture.active = true;
             std::snprintf(s_raw_mod_capture.package, sizeof(s_raw_mod_capture.package), "%s", feature.package_id);
             std::snprintf(s_raw_mod_capture.feature, sizeof(s_raw_mod_capture.feature), "%s", feature.id);
             std::snprintf(s_raw_mod_capture.option, sizeof(s_raw_mod_capture.option), "%s", option.id);
             std::snprintf(s_raw_mod_capture.guid, sizeof(s_raw_mod_capture.guid), "%s", option.device_guid);
+            s_raw_mod_capture.type = option.type;
+            s_raw_mod_capture.active = raw_mod_open_selected(s_raw_mod_capture.guid);
+            s_raw_mod_capture.missing = !s_raw_mod_capture.active;
         }
-        if (capturing && ImGui::IsItemHovered())
-            ImGui::SetTooltip("Press a button on the selected wheel. Escape cancels; Backspace unbinds.");
+        if (ImGui::IsItemHovered() && (capturing || missing))
+            ImGui::SetTooltip("%s", missing ?
+                "Selected wheel not connected (or its GUID changed). Connect it and click again." :
+                "Move/press the selected wheel control. Escape cancels; Backspace unbinds.");
     } else if (option.type == RECOMP_MOD_OPTION_TEXT) {
         changed = draw_mod_text_option(option, next, sizeof(next));
     } else {
@@ -12878,25 +12957,30 @@ bool is_modifier_scancode(SDL_Scancode sc) {
 
 bool try_capture(LauncherModel* m, const SDL_Event& ev) {
     if (s_raw_mod_capture.active) {
+        if (ev.type == SDL_EVENT_QUIT ||
+            ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+            raw_mod_close_capture();
+            return false;
+        }
         if (ev.type == SDL_EVENT_KEY_DOWN && LNG_EVKEY(ev) == SDLK_ESCAPE) {
-            s_raw_mod_capture.active = false;
+            raw_mod_close_capture();
             return true;
         }
         int button = -2;
         if (ev.type == SDL_EVENT_KEY_DOWN && LNG_EVKEY(ev) == SDLK_BACKSPACE)
             button = -1;
-        if (ev.type == SDL_EVENT_JOYSTICK_BUTTON_DOWN) {
-            char guid[40]{};
-#if defined(LNG_SDL3)
-            SDL_GUIDToString(SDL_GetJoystickGUIDForID((SDL_JoystickID)LNG_EVJBTNWHICH(ev)), guid, sizeof(guid));
-#else
-            SDL_Joystick* stick = SDL_JoystickFromInstanceID((SDL_JoystickID)LNG_EVJBTNWHICH(ev));
-            if (stick) SDL_JoystickGetGUIDString(SDL_JoystickGetGUID(stick), guid, sizeof(guid));
-#endif
-            if (!s_raw_mod_capture.guid[0] ||
-                std::strcmp(guid, s_raw_mod_capture.guid) == 0)
-                button = (int)LNG_EVJBTN(ev);
-        }
+        if (s_raw_mod_capture.type == RECOMP_MOD_OPTION_RAW_BUTTON &&
+            ev.type == SDL_EVENT_JOYSTICK_BUTTON_DOWN &&
+            LNG_EVJBTNWHICH(ev) == s_raw_mod_joystick_id)
+            button = (int)LNG_EVJBTN(ev);
+        if (s_raw_mod_capture.type == RECOMP_MOD_OPTION_RAW_AXIS &&
+            ev.type == SDL_EVENT_JOYSTICK_AXIS_MOTION &&
+            LNG_EVJAXISWHICH(ev) == s_raw_mod_joystick_id &&
+            LNG_EVJAXIS(ev) < s_raw_mod_axis_count &&
+            LNG_EVJAXIS(ev) < 16 &&
+            std::abs((int)LNG_EVJAXISVAL(ev) -
+                     s_raw_mod_axis_baseline[LNG_EVJAXIS(ev)]) > 12000)
+            button = (int)LNG_EVJAXIS(ev);
         if (button != -2) {
             char value[16];
             std::snprintf(value, sizeof(value), "%d", button);
@@ -12906,7 +12990,7 @@ bool try_capture(LauncherModel* m, const SDL_Event& ev) {
                                           s_raw_mod_capture.feature,
                                           s_raw_mod_capture.option, value))
                 mod_note_error(m);
-            s_raw_mod_capture.active = false;
+            raw_mod_close_capture();
         }
         return true;
     }
@@ -13553,6 +13637,7 @@ extern "C" LngAction launcher_backend_run(LauncherPlatform* p,
         {
             ImGuiIO& nav_io = ImGui::GetIO();
             if (m->capturing || m->hk_capturing || m->camera_capturing ||
+                s_raw_mod_capture.active ||
                 automap_in_progress() || !s_pad_nav_armed)
                 nav_io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
             else
@@ -13577,6 +13662,7 @@ extern "C" LngAction launcher_backend_run(LauncherPlatform* p,
         }
     }
 
+    raw_mod_close_capture();
     launcher_input_shutdown();
     launcher_texture_free(&g_boxart);
     launcher_texture_free(&g_pad);
