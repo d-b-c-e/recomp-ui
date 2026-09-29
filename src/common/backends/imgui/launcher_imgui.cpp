@@ -25,6 +25,7 @@
 #include "consoles/n64/n64_binds.h"   // RUI_N64_FIELD_* for the pad-capture path
 
 #include "launcher_sdlcompat.h"   // pulls the right SDL header + event shim
+#include "raw_button_capture_gate.h"
 
 #include "imgui.h"
 #include "launcher_nav.h"
@@ -10453,9 +10454,101 @@ static SDL_Joystick* s_raw_mod_joystick = nullptr;
 static SDL_JoystickID s_raw_mod_joystick_id = 0;
 static int s_raw_mod_axis_count = 0;
 static int s_raw_mod_axis_baseline[32]{};
+static RawButtonCaptureGate s_raw_mod_button_gate;
+static SDL_Joystick* s_raw_mod_monitor_joystick = nullptr;
+static SDL_JoystickID s_raw_mod_monitor_id = 0;
+static char s_raw_mod_monitor_guid[40]{};
+
+static void raw_mod_close_monitor() {
+    if (s_raw_mod_monitor_joystick) {
+#if defined(LNG_SDL3)
+        SDL_CloseJoystick(s_raw_mod_monitor_joystick);
+#else
+        SDL_JoystickClose(s_raw_mod_monitor_joystick);
+#endif
+    }
+    s_raw_mod_monitor_joystick = nullptr;
+    s_raw_mod_monitor_id = 0;
+    s_raw_mod_monitor_guid[0] = 0;
+}
+
+static bool raw_mod_monitor_open(const char* guid) {
+    if (!guid || !guid[0]) { raw_mod_close_monitor(); return false; }
+    if (s_raw_mod_monitor_joystick &&
+        std::strcmp(guid, s_raw_mod_monitor_guid) == 0) {
+#if defined(LNG_SDL3)
+        if (SDL_JoystickConnected(s_raw_mod_monitor_joystick)) return true;
+#else
+        if (SDL_JoystickGetAttached(s_raw_mod_monitor_joystick)) return true;
+#endif
+    }
+    raw_mod_close_monitor();
+#if defined(LNG_SDL3)
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetJoysticks(&count);
+    if (ids) {
+        for (int i = 0; i < count; ++i) {
+            char found[40]{};
+            SDL_GUIDToString(SDL_GetJoystickGUIDForID(ids[i]), found, sizeof(found));
+            if (std::strcmp(found, guid) != 0) continue;
+            s_raw_mod_monitor_joystick = SDL_OpenJoystick(ids[i]);
+            if (s_raw_mod_monitor_joystick) s_raw_mod_monitor_id = ids[i];
+            break;
+        }
+        SDL_free(ids);
+    }
+#else
+    const int count = SDL_NumJoysticks();
+    for (int i = 0; i < count; ++i) {
+        char found[40]{};
+        SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(i), found, sizeof(found));
+        if (std::strcmp(found, guid) != 0) continue;
+        s_raw_mod_monitor_joystick = SDL_JoystickOpen(i);
+        if (s_raw_mod_monitor_joystick)
+            s_raw_mod_monitor_id = SDL_JoystickInstanceID(s_raw_mod_monitor_joystick);
+        break;
+    }
+#endif
+    if (s_raw_mod_monitor_joystick)
+        std::snprintf(s_raw_mod_monitor_guid, sizeof(s_raw_mod_monitor_guid), "%s", guid);
+    return s_raw_mod_monitor_joystick != nullptr;
+}
+
+static int raw_mod_num_buttons(SDL_Joystick* joystick) {
+#if defined(LNG_SDL3)
+    return SDL_GetNumJoystickButtons(joystick);
+#else
+    return SDL_JoystickNumButtons(joystick);
+#endif
+}
+
+static int raw_mod_button(SDL_Joystick* joystick, int button) {
+#if defined(LNG_SDL3)
+    return SDL_GetJoystickButton(joystick, button);
+#else
+    return SDL_JoystickGetButton(joystick, button);
+#endif
+}
+
+static int raw_mod_num_axes(SDL_Joystick* joystick) {
+#if defined(LNG_SDL3)
+    return SDL_GetNumJoystickAxes(joystick);
+#else
+    return SDL_JoystickNumAxes(joystick);
+#endif
+}
+
+static int raw_mod_axis(SDL_Joystick* joystick, int axis) {
+#if defined(LNG_SDL3)
+    return SDL_GetJoystickAxis(joystick, axis);
+#else
+    return SDL_JoystickGetAxis(joystick, axis);
+#endif
+}
 
 static void raw_mod_close_capture() {
     s_raw_mod_capture.active = false;
+    s_raw_mod_button_gate.begin(nullptr, 0);
     if (s_raw_mod_joystick) {
 #if defined(LNG_SDL3)
         SDL_CloseJoystick(s_raw_mod_joystick);
@@ -10512,7 +10605,74 @@ static bool raw_mod_open_selected(const char* guid) {
         s_raw_mod_axis_baseline[axis] = SDL_JoystickGetAxis(s_raw_mod_joystick, axis);
 #endif
     }
+    uint8_t pressed[128]{};
+    int buttons = raw_mod_num_buttons(s_raw_mod_joystick);
+    if (buttons > 128) buttons = 128;
+    for (int button = 0; button < buttons; ++button)
+        pressed[button] = raw_mod_button(s_raw_mod_joystick, button) ? 1 : 0;
+    s_raw_mod_button_gate.begin(pressed, buttons);
     return true;
+}
+
+static void draw_raw_mod_monitor(const LauncherTheme& th, const char* guid) {
+    ImGui::Spacing();
+    ImGui::Separator();
+    if (!ImGui::CollapsingHeader("Live wheel input", ImGuiTreeNodeFlags_DefaultOpen))
+        return;
+    if (!raw_mod_monitor_open(guid)) {
+        ImGui::TextColored(col(th.warn), "Selected wheel is not connected.");
+        ImGui::TextColored(col(th.text_muted), "GUID: %s", guid);
+        return;
+    }
+#if defined(LNG_SDL3)
+    SDL_UpdateJoysticks();
+    const char* name = SDL_GetJoystickName(s_raw_mod_monitor_joystick);
+#else
+    SDL_JoystickUpdate();
+    const char* name = SDL_JoystickName(s_raw_mod_monitor_joystick);
+#endif
+    ImGui::Text("%s (SDL instance %u)", name ? name : "Joystick",
+                (unsigned)s_raw_mod_monitor_id);
+    ImGui::TextColored(col(th.text_muted), "GUID: %s", guid);
+    const int button_count = raw_mod_num_buttons(s_raw_mod_monitor_joystick);
+    const int axis_count = raw_mod_num_axes(s_raw_mod_monitor_joystick);
+    char held[512] = {};
+    int held_count = 0;
+    for (int button = 0; button < button_count && button < 128; ++button) {
+        if (!raw_mod_button(s_raw_mod_monitor_joystick, button)) continue;
+        char item[16];
+        std::snprintf(item, sizeof(item), "%s%d", held_count ? ", " : "", button);
+        if (std::strlen(held) + std::strlen(item) < sizeof(held) - 1)
+            std::strcat(held, item);
+        ++held_count;
+    }
+    ImGui::TextColored(held_count ? col(th.warn) : col(th.text_muted),
+                       "Pressed now: %s", held_count ? held : "none");
+    ImGui::TextColored(col(th.text_muted),
+                       "Raw SDL indices are zero-based. Pressed controls light up below.");
+    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    if (ImGui::TreeNode("Buttons", "Buttons (%d)", button_count)) {
+        const int shown = button_count < 128 ? button_count : 128;
+        for (int button = 0; button < shown; ++button) {
+            if (button % 8) ImGui::SameLine(0, px(11));
+            const bool down = raw_mod_button(s_raw_mod_monitor_joystick, button) != 0;
+            ImGui::TextColored(down ? col(th.accent) : col(th.text_muted),
+                               "%02d%s", button, down ? "*" : " ");
+        }
+        ImGui::TreePop();
+    }
+    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    if (ImGui::TreeNode("Axes", "Axes (%d)", axis_count)) {
+        const int shown = axis_count < 16 ? axis_count : 16;
+        for (int axis = 0; axis < shown; ++axis) {
+            const int value = raw_mod_axis(s_raw_mod_monitor_joystick, axis);
+            char overlay[48];
+            std::snprintf(overlay, sizeof(overlay), "Axis %d: %+6d", axis, value);
+            ImGui::ProgressBar((value + 32768.0f) / 65535.0f,
+                               ImVec2(-1.0f, px(15)), overlay);
+        }
+        ImGui::TreePop();
+    }
 }
 
 static void draw_mod_feature_option(LauncherModel* m,
@@ -11114,6 +11274,7 @@ static void draw_mod_features(LauncherModel* m, const LauncherTheme& th) {
                 ImGui::Separator();
             }
             std::string last_group;
+            char raw_device_guid[40]{};
             for (int index = 0; index < feature.option_count; ++index) {
                 RecompLauncherCModOption option{};
                 if (!mods->feature_option_get(
@@ -11121,6 +11282,11 @@ static void draw_mod_features(LauncherModel* m, const LauncherTheme& th) {
                         index, &option)) {
                     continue;
                 }
+                if (!raw_device_guid[0] && option.device_guid[0] &&
+                    (option.type == RECOMP_MOD_OPTION_RAW_BUTTON ||
+                     option.type == RECOMP_MOD_OPTION_RAW_AXIS))
+                    std::snprintf(raw_device_guid, sizeof(raw_device_guid),
+                                  "%s", option.device_guid);
                 if (last_group != option.group) {
                     last_group = option.group;
                     ImGui::Spacing();
@@ -11132,6 +11298,8 @@ static void draw_mod_features(LauncherModel* m, const LauncherTheme& th) {
                 }
                 draw_mod_feature_option(m, feature, option);
             }
+            if (raw_device_guid[0])
+                draw_raw_mod_monitor(th, raw_device_guid);
         } else {
             ImGui::TextColored(col(th.text_muted),
                                "%s", ui_text("Install or select a feature to configure it."));
@@ -12971,8 +13139,12 @@ bool try_capture(LauncherModel* m, const SDL_Event& ev) {
             button = -1;
         if (s_raw_mod_capture.type == RECOMP_MOD_OPTION_RAW_BUTTON &&
             ev.type == SDL_EVENT_JOYSTICK_BUTTON_DOWN &&
-            LNG_EVJBTNWHICH(ev) == s_raw_mod_joystick_id)
+            LNG_EVJBTNWHICH(ev) == s_raw_mod_joystick_id &&
+            s_raw_mod_button_gate.accepts_down((int)LNG_EVJBTN(ev)))
             button = (int)LNG_EVJBTN(ev);
+        if (ev.type == SDL_EVENT_JOYSTICK_BUTTON_UP &&
+            LNG_EVJBTNWHICH(ev) == s_raw_mod_joystick_id)
+            s_raw_mod_button_gate.released((int)LNG_EVJBTN(ev));
         if (s_raw_mod_capture.type == RECOMP_MOD_OPTION_RAW_AXIS &&
             ev.type == SDL_EVENT_JOYSTICK_AXIS_MOTION &&
             LNG_EVJAXISWHICH(ev) == s_raw_mod_joystick_id &&
@@ -13663,6 +13835,7 @@ extern "C" LngAction launcher_backend_run(LauncherPlatform* p,
     }
 
     raw_mod_close_capture();
+    raw_mod_close_monitor();
     launcher_input_shutdown();
     launcher_texture_free(&g_boxart);
     launcher_texture_free(&g_pad);

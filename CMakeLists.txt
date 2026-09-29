@@ -69,6 +69,13 @@ recomp_target_launcher_ui(recomp-ui-launcher CONSOLE all)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(recomp-ui-raw-button-capture-gate-test
+        tests/raw_button_capture_gate_test.cpp)
+    target_include_directories(recomp-ui-raw-button-capture-gate-test PRIVATE
+        src/common/backends/imgui)
+    add_test(NAME recomp-ui-raw-button-capture-gate
+             COMMAND $<TARGET_FILE:recomp-ui-raw-button-capture-gate-test>)
+
     add_executable(recomp-ui-ips-patch-test
         tests/ips_patch_test.c
         src/common/ips_patch.c
