@@ -69,6 +69,13 @@ recomp_target_launcher_ui(recomp-ui-launcher CONSOLE all)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(recomp-ui-raw-hat-binding-test
+        tests/raw_hat_binding_test.cpp)
+    target_include_directories(recomp-ui-raw-hat-binding-test PRIVATE
+        src/common)
+    add_test(NAME recomp-ui-raw-hat-binding
+             COMMAND $<TARGET_FILE:recomp-ui-raw-hat-binding-test>)
+
     add_executable(recomp-ui-raw-button-capture-gate-test
         tests/raw_button_capture_gate_test.cpp)
     target_include_directories(recomp-ui-raw-button-capture-gate-test PRIVATE

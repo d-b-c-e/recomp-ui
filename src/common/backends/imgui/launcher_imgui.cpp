@@ -26,6 +26,7 @@
 
 #include "launcher_sdlcompat.h"   // pulls the right SDL header + event shim
 #include "raw_button_capture_gate.h"
+#include "raw_hat_binding.h"
 
 #include "imgui.h"
 #include "launcher_nav.h"
@@ -10443,6 +10444,7 @@ static bool mod_feature_less(const ModFeatureListItem& lhs,
 struct RawModCapture {
     bool active = false;
     bool missing = false;
+    bool hat_enabled = false;
     int type = RECOMP_MOD_OPTION_RAW_BUTTON;
     char package[RECOMP_LAUNCHER_MOD_ID_MAX]{};
     char feature[RECOMP_LAUNCHER_MOD_ID_MAX]{};
@@ -10454,6 +10456,8 @@ static SDL_Joystick* s_raw_mod_joystick = nullptr;
 static SDL_JoystickID s_raw_mod_joystick_id = 0;
 static int s_raw_mod_axis_count = 0;
 static int s_raw_mod_axis_baseline[32]{};
+static int s_raw_mod_hat_count = 0;
+static bool s_raw_mod_hat_armed[16]{};
 static RawButtonCaptureGate s_raw_mod_button_gate;
 static SDL_Joystick* s_raw_mod_monitor_joystick = nullptr;
 static SDL_JoystickID s_raw_mod_monitor_id = 0;
@@ -10538,6 +10542,22 @@ static int raw_mod_num_axes(SDL_Joystick* joystick) {
 #endif
 }
 
+static int raw_mod_num_hats(SDL_Joystick* joystick) {
+#if defined(LNG_SDL3)
+    return SDL_GetNumJoystickHats(joystick);
+#else
+    return SDL_JoystickNumHats(joystick);
+#endif
+}
+
+static int raw_mod_hat(SDL_Joystick* joystick, int hat) {
+#if defined(LNG_SDL3)
+    return SDL_GetJoystickHat(joystick, hat);
+#else
+    return SDL_JoystickGetHat(joystick, hat);
+#endif
+}
+
 static int raw_mod_axis(SDL_Joystick* joystick, int axis) {
 #if defined(LNG_SDL3)
     return SDL_GetJoystickAxis(joystick, axis);
@@ -10549,6 +10569,8 @@ static int raw_mod_axis(SDL_Joystick* joystick, int axis) {
 static void raw_mod_close_capture() {
     s_raw_mod_capture.active = false;
     s_raw_mod_button_gate.begin(nullptr, 0);
+    s_raw_mod_hat_count = 0;
+    std::memset(s_raw_mod_hat_armed, 0, sizeof(s_raw_mod_hat_armed));
     if (s_raw_mod_joystick) {
 #if defined(LNG_SDL3)
         SDL_CloseJoystick(s_raw_mod_joystick);
@@ -10611,6 +10633,10 @@ static bool raw_mod_open_selected(const char* guid) {
     for (int button = 0; button < buttons; ++button)
         pressed[button] = raw_mod_button(s_raw_mod_joystick, button) ? 1 : 0;
     s_raw_mod_button_gate.begin(pressed, buttons);
+    s_raw_mod_hat_count = raw_mod_num_hats(s_raw_mod_joystick);
+    if (s_raw_mod_hat_count > 16) s_raw_mod_hat_count = 16;
+    for (int hat = 0; hat < s_raw_mod_hat_count; ++hat)
+        s_raw_mod_hat_armed[hat] = raw_mod_hat(s_raw_mod_joystick, hat) == SDL_HAT_CENTERED;
     return true;
 }
 
@@ -10636,6 +10662,20 @@ static void draw_raw_mod_monitor(const LauncherTheme& th, const char* guid) {
     ImGui::TextColored(col(th.text_muted), "GUID: %s", guid);
     const int button_count = raw_mod_num_buttons(s_raw_mod_monitor_joystick);
     const int axis_count = raw_mod_num_axes(s_raw_mod_monitor_joystick);
+    const int hat_count = raw_mod_num_hats(s_raw_mod_monitor_joystick);
+    if (!hat_count)
+        ImGui::TextColored(col(th.text_muted), "Hats: none reported by this device");
+    for (int hat = 0; hat < hat_count && hat < 16; ++hat) {
+        const int value = raw_mod_hat(s_raw_mod_monitor_joystick, hat);
+        char direction[64]{};
+        std::snprintf(direction, sizeof(direction), "%s%s%s%s",
+                      value & SDL_HAT_UP ? "Up " : "",
+                      value & SDL_HAT_RIGHT ? "Right " : "",
+                      value & SDL_HAT_DOWN ? "Down " : "",
+                      value & SDL_HAT_LEFT ? "Left " : "");
+        ImGui::TextColored(value ? col(th.accent) : col(th.text_muted),
+                           "Hat %d: %s", hat, value ? direction : "Centered");
+    }
     char held[512] = {};
     int held_count = 0;
     for (int button = 0; button < button_count && button < 128; ++button) {
@@ -10749,10 +10789,17 @@ static void draw_mod_feature_option(LauncherModel* m,
         ImGui::TextUnformatted(option.label);
         ImGui::SameLine(px(260));
         char caption[64];
+        const int binding = std::atoi(option.value);
+        const bool hat_enabled = option.type == RECOMP_MOD_OPTION_RAW_BUTTON &&
+            option.max_value >= RECOMP_RAW_HAT_MAX;
         if (capturing) std::snprintf(caption, sizeof(caption), "%s",
-            option.type == RECOMP_MOD_OPTION_RAW_AXIS ? "Move an axis…" : "Press a button…");
+            option.type == RECOMP_MOD_OPTION_RAW_AXIS ? "Move an axis…" :
+            hat_enabled ? "Press or move hat…" : "Press a button…");
         else if (missing) std::snprintf(caption, sizeof(caption), "Wheel not found");
-        else if (std::atoi(option.value) < 0) std::snprintf(caption, sizeof(caption), "Unbound");
+        else if (binding < 0) std::snprintf(caption, sizeof(caption), "Unbound");
+        else if (hat_enabled && recomp_raw_hat_index(binding) >= 0)
+            std::snprintf(caption, sizeof(caption), "Hat %d %s",
+                recomp_raw_hat_index(binding), recomp_raw_hat_direction(binding));
         else std::snprintf(caption, sizeof(caption), "%s %s",
             option.type == RECOMP_MOD_OPTION_RAW_AXIS ? "Axis" : "Button", option.value);
         if (ImGui::Button(caption, ImVec2(px(230), 0))) {
@@ -10761,6 +10808,7 @@ static void draw_mod_feature_option(LauncherModel* m,
             std::snprintf(s_raw_mod_capture.option, sizeof(s_raw_mod_capture.option), "%s", option.id);
             std::snprintf(s_raw_mod_capture.guid, sizeof(s_raw_mod_capture.guid), "%s", option.device_guid);
             s_raw_mod_capture.type = option.type;
+            s_raw_mod_capture.hat_enabled = hat_enabled;
             s_raw_mod_capture.active = raw_mod_open_selected(s_raw_mod_capture.guid);
             s_raw_mod_capture.missing = !s_raw_mod_capture.active;
         }
@@ -13145,6 +13193,19 @@ bool try_capture(LauncherModel* m, const SDL_Event& ev) {
         if (ev.type == SDL_EVENT_JOYSTICK_BUTTON_UP &&
             LNG_EVJBTNWHICH(ev) == s_raw_mod_joystick_id)
             s_raw_mod_button_gate.released((int)LNG_EVJBTN(ev));
+        if (s_raw_mod_capture.type == RECOMP_MOD_OPTION_RAW_BUTTON &&
+            s_raw_mod_capture.hat_enabled &&
+            ev.type == SDL_EVENT_JOYSTICK_HAT_MOTION &&
+            LNG_EVJHATWHICH(ev) == s_raw_mod_joystick_id &&
+            LNG_EVJHAT(ev) < s_raw_mod_hat_count) {
+            const int hat = (int)LNG_EVJHAT(ev);
+            const int value = (int)LNG_EVJHATVAL(ev);
+            if (value == SDL_HAT_CENTERED) s_raw_mod_hat_armed[hat] = true;
+            else if (s_raw_mod_hat_armed[hat]) {
+                const int encoded = recomp_raw_hat_encode(hat, value);
+                if (encoded >= RECOMP_RAW_HAT_BASE) button = encoded;
+            }
+        }
         if (s_raw_mod_capture.type == RECOMP_MOD_OPTION_RAW_AXIS &&
             ev.type == SDL_EVENT_JOYSTICK_AXIS_MOTION &&
             LNG_EVJAXISWHICH(ev) == s_raw_mod_joystick_id &&

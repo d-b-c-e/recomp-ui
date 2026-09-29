@@ -41,6 +41,7 @@
 #define SDL_EVENT_GAMEPAD_AXIS_MOTION   SDL_CONTROLLERAXISMOTION
 #define SDL_EVENT_JOYSTICK_BUTTON_DOWN  SDL_JOYBUTTONDOWN
 #define SDL_EVENT_JOYSTICK_AXIS_MOTION  SDL_JOYAXISMOTION
+#define SDL_EVENT_JOYSTICK_HAT_MOTION   SDL_JOYHATMOTION
 
 // key event fields: SDL3 ev.key.{key,scancode,mod} == SDL2 ev.key.keysym.{sym,scancode,mod}
 #define LNG_EVKEY(ev)    ((ev).key.keysym.sym)
@@ -61,6 +62,9 @@
 #define LNG_EVJAXIS(ev)     ((ev).jaxis.axis)
 #define LNG_EVJAXISVAL(ev)  ((ev).jaxis.value)
 #define LNG_EVJAXISWHICH(ev) ((ev).jaxis.which)
+#define LNG_EVJHAT(ev)       ((ev).jhat.hat)
+#define LNG_EVJHATVAL(ev)    ((ev).jhat.value)
+#define LNG_EVJHATWHICH(ev)  ((ev).jhat.which)
 
 // button->name lookup
 #define SDL_GetGamepadStringForButton(b)  SDL_GameControllerGetStringForButton((SDL_GameControllerButton)(b))
@@ -91,6 +95,9 @@ typedef SDL_GameControllerAxis    LNG_GamepadAxis;
 #define LNG_EVJAXIS(ev)     ((ev).jaxis.axis)
 #define LNG_EVJAXISVAL(ev)  ((ev).jaxis.value)
 #define LNG_EVJAXISWHICH(ev) ((ev).jaxis.which)
+#define LNG_EVJHAT(ev)       ((ev).jhat.hat)
+#define LNG_EVJHATVAL(ev)    ((ev).jhat.value)
+#define LNG_EVJHATWHICH(ev)  ((ev).jhat.which)
 typedef SDL_GamepadButton  LNG_GamepadButton;
 typedef SDL_GamepadAxis    LNG_GamepadAxis;
 #endif
