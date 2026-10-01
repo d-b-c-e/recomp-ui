@@ -225,7 +225,47 @@ static void test_genesis_custom_mode_list(void) {
     free(m);
 }
 
+static int selection_calls;
+static int selection_notify(void *ctx, int player, int kind, const char *guid) {
+    expect(ctx == &selection_calls, "selection keeps provider context");
+    ++selection_calls;
+    return player != 0 || kind != 2 || !strcmp(guid, kFixtureGuid) ||
+           !strcmp(guid, "030000004c0500006802000000000001");
+}
+static void test_selection_notification(void) {
+    LauncherModel *m = calloc(1, sizeof(*m));
+    RecompLauncherCModProvider provider = {0};
+    provider.ctx = &selection_calls;
+    provider.select_controller = selection_notify;
+    m->mods = &provider;
+    /* A cancelled picker makes no setter call and therefore no notification. */
+    expect(selection_calls == 0, "cancel leaves provider untouched");
+    launcher_model_set_source(m, 0, SRC_GAMEPAD, 11, "selected", kFixtureGuid);
+    expect(selection_calls == 1 && !strcmp(m->s.player_gamepad_guid[0], kFixtureGuid),
+           "first selection notifies and updates settings");
+    launcher_model_set_source(m, 0, SRC_GAMEPAD, 12, "changed",
+                              "030000004c0500006802000000000001");
+    expect(selection_calls == 2 && m->player_pad_id[0] == 12,
+           "device change notifies immediately");
+    m->capturing = true;
+    launcher_model_cancel_capture(m);
+    expect(selection_calls == 2 && !m->capturing && m->player_pad_id[0] == 12,
+           "cancel capture preserves selected device without rebind");
+    launcher_model_set_source(m, 0, SRC_GAMEPAD, 12, "invalid", "invalid");
+    expect(selection_calls == 3 && m->player_pad_id[0] == 12 &&
+           !strcmp(m->s.player_gamepad_guid[0], "030000004c0500006802000000000001"),
+           "rejected selection leaves GUID and instance unchanged");
+    launcher_model_set_source(m, 0, SRC_KEYBOARD, 0, NULL, NULL);
+    expect(selection_calls == 4 && !m->s.player_gamepad_guid[0][0],
+           "keyboard selection still clears launcher GUID");
+    m->mods = NULL;
+    launcher_model_set_source(m, 0, SRC_GAMEPAD, 12, "legacy", "legacy-guid");
+    expect(!strcmp(m->s.player_gamepad_guid[0], "legacy-guid"),
+           "providers without notification keep existing behavior");
+    free(m);
+}
 int main(void) {
+    test_selection_notification();
     test_locked_analog_keyboard_seat();
     test_locked_analog_poisoned_settings();
     test_locked_digital_still_digital();

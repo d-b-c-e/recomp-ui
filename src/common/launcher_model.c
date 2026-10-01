@@ -3971,6 +3971,9 @@ void launcher_model_set_source(LauncherModel* m, int player, int kind,
                                uint32_t pad_id, const char* pad_name,
                                const char* pad_guid) {
     player = clampi(player, 0, LNG_MAX_PLAYERS - 1);
+    if (m->mods && m->mods->select_controller &&
+        !m->mods->select_controller(m->mods->ctx, player, clampi(kind, 0, 2),
+                                   pad_guid ? pad_guid : "")) return;
     m->s.player_src[player] = clampi(kind, 0, 2);
     if (kind == 2) {
         m->player_pad_id[player] = pad_id;

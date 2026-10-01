@@ -1016,6 +1016,11 @@ typedef struct RecompLauncherCModProvider {
     int (*catalog_diagnostic_count)(void* ctx);
     int (*catalog_diagnostic_get)(void* ctx, int index,
                                   RecompLauncherCModDiagnostic* out);
+    /* Optional input-profile rebind before an explicit source selection.
+     * Return 0 to reject the selection without changing launcher settings.
+     * Cancelled pickers never call this. No device/force output is implied.
+     * Appended for statically paired source builds, not binary ABI negotiation. */
+    int (*select_controller)(void* ctx, int player, int kind, const char* guid);
 } RecompLauncherCModProvider;
 
 // Plain-C mirror of the launcher's internal settings (bools as int).
